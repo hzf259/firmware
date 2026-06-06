@@ -1,9 +1,8 @@
 #include "coldchain_board.h"
 #include "sht31.h"
 
-#define SHT31_ADDR_7BIT        0x44U
-#define SHT31_WRITE_ADDR       ((SHT31_ADDR_7BIT << 1) | 0U)
-#define SHT31_READ_ADDR        ((SHT31_ADDR_7BIT << 1) | 1U)
+#define SHT31_ADDR_7BIT_PRIMARY    0x44U
+#define SHT31_ADDR_7BIT_SECONDARY  0x45U
 #define SHT31_CMD_MEAS_HIGHREP 0x2400U
 
 #define SHT31_SCL PBout(6)
@@ -123,34 +122,16 @@ static uint8_t SHT31_Crc8(const uint8_t *data, uint8_t len)
     return crc;
 }
 
-void SHT31_Init(void)
-{
-    GPIO_InitTypeDef gpio_init;
-
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
-
-    gpio_init.GPIO_Pin = GPIO_Pin_6 | GPIO_Pin_7;
-    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio_init.GPIO_Mode = GPIO_Mode_Out_OD;
-    GPIO_Init(GPIOB, &gpio_init);
-
-    SHT31_SCL = 1;
-    SHT31_SDA = 1;
-}
-
-uint8_t SHT31_Read(SHT31_Data *out)
+static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
 {
     uint8_t rx[6];
     uint16_t raw_t;
     uint16_t raw_h;
-
-    if (out == 0)
-    {
-        return 0U;
-    }
+    uint8_t write_addr = (uint8_t)((addr_7bit << 1) | 0U);
+    uint8_t read_addr = (uint8_t)((addr_7bit << 1) | 1U);
 
     SHT31_Start();
-    SHT31_WriteByte(SHT31_WRITE_ADDR);
+    SHT31_WriteByte(write_addr);
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
@@ -175,7 +156,7 @@ uint8_t SHT31_Read(SHT31_Data *out)
     DelayMs(20U);
 
     SHT31_Start();
-    SHT31_WriteByte(SHT31_READ_ADDR);
+    SHT31_WriteByte(read_addr);
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
@@ -202,4 +183,45 @@ uint8_t SHT31_Read(SHT31_Data *out)
     out->humidity_rh = 100.0f * (float)raw_h / 65535.0f;
 
     return 1U;
+}
+
+void SHT31_Init(void)
+{
+    GPIO_InitTypeDef gpio_init;
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+    gpio_init.GPIO_Pin = GPIO_Pin_6 | GPIO_Pin_7;
+    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio_init.GPIO_Mode = GPIO_Mode_Out_OD;
+    GPIO_Init(GPIOB, &gpio_init);
+
+    SHT31_SCL = 1;
+    SHT31_SDA = 1;
+}
+
+uint8_t SHT31_Read(SHT31_Data *out)
+{
+    static uint8_t current_addr = SHT31_ADDR_7BIT_PRIMARY;
+    uint8_t alternate_addr;
+
+    if (out == 0)
+    {
+        return 0U;
+    }
+
+    if (SHT31_ReadAtAddress(current_addr, out) != 0U)
+    {
+        return 1U;
+    }
+
+    alternate_addr = (current_addr == SHT31_ADDR_7BIT_PRIMARY) ?
+        SHT31_ADDR_7BIT_SECONDARY : SHT31_ADDR_7BIT_PRIMARY;
+    if (SHT31_ReadAtAddress(alternate_addr, out) != 0U)
+    {
+        current_addr = alternate_addr;
+        return 1U;
+    }
+
+    return 0U;
 }
