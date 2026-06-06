@@ -10,6 +10,26 @@
 
 static char g_sht31_last_error[80] = "not started";
 
+static void SHT31_SdaOutputMode(void)
+{
+    GPIO_InitTypeDef gpio_init;
+
+    gpio_init.GPIO_Pin = GPIO_Pin_7;
+    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio_init.GPIO_Mode = GPIO_Mode_Out_OD;
+    GPIO_Init(GPIOB, &gpio_init);
+}
+
+static void SHT31_SdaInputMode(void)
+{
+    GPIO_InitTypeDef gpio_init;
+
+    gpio_init.GPIO_Pin = GPIO_Pin_7;
+    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio_init.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOB, &gpio_init);
+}
+
 static void SHT31_BusDelay(void)
 {
     DelayUs(5U);
@@ -17,6 +37,7 @@ static void SHT31_BusDelay(void)
 
 static void SHT31_Start(void)
 {
+    SHT31_SdaOutputMode();
     SHT31_SDA = 1;
     SHT31_SCL = 1;
     SHT31_BusDelay();
@@ -28,6 +49,7 @@ static void SHT31_Start(void)
 
 static void SHT31_Stop(void)
 {
+    SHT31_SdaOutputMode();
     SHT31_SDA = 0;
     SHT31_BusDelay();
     SHT31_SCL = 1;
@@ -40,13 +62,14 @@ static uint8_t SHT31_WaitAck(void)
 {
     uint8_t ack;
 
-    SHT31_SDA = 1;
+    SHT31_SdaInputMode();
     SHT31_BusDelay();
     SHT31_SCL = 1;
     SHT31_BusDelay();
     ack = (uint8_t)GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_7);
     SHT31_SCL = 0;
     SHT31_BusDelay();
+    SHT31_SdaOutputMode();
     return ack;
 }
 
@@ -54,6 +77,7 @@ static void SHT31_WriteByte(uint8_t value)
 {
     uint8_t i;
 
+    SHT31_SdaOutputMode();
     for (i = 0U; i < 8U; i++)
     {
         SHT31_SDA = (value & 0x80U) ? 1 : 0;
@@ -73,7 +97,7 @@ static uint8_t SHT31_ReadByte(uint8_t ack)
     uint8_t i;
     uint8_t value = 0U;
 
-    SHT31_SDA = 1;
+    SHT31_SdaInputMode();
 
     for (i = 0U; i < 8U; i++)
     {
@@ -88,6 +112,7 @@ static uint8_t SHT31_ReadByte(uint8_t ack)
         SHT31_BusDelay();
     }
 
+    SHT31_SdaOutputMode();
     SHT31_SDA = (ack != 0U) ? 0 : 1;
     SHT31_BusDelay();
     SHT31_SCL = 1;
