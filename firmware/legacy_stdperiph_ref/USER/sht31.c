@@ -3,125 +3,78 @@
 
 #define SHT31_ADDR_7BIT_PRIMARY    0x44U
 #define SHT31_ADDR_7BIT_SECONDARY  0x45U
-#define SHT31_CMD_MEAS_HIGHREP 0x2400U
+#define SHT31_CMD_MEAS_HIGHREP_MSB 0x24U
+#define SHT31_CMD_MEAS_HIGHREP_LSB 0x00U
+#define SHT31_I2C_TIMEOUT          100000U
 
-#define SHT31_SCL PBout(6)
-#define SHT31_SDA PBout(7)
+static char g_sht31_last_error[96] = "not started";
 
-static char g_sht31_last_error[80] = "not started";
-
-static void SHT31_SdaOutputMode(void)
+static void SHT31_SetError(const char *text)
 {
-    GPIO_InitTypeDef gpio_init;
-
-    gpio_init.GPIO_Pin = GPIO_Pin_7;
-    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio_init.GPIO_Mode = GPIO_Mode_Out_OD;
-    GPIO_Init(GPIOB, &gpio_init);
+    snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "%s", text);
 }
 
-static void SHT31_SdaInputMode(void)
+static void SHT31_ResetBus(void)
 {
-    GPIO_InitTypeDef gpio_init;
-
-    gpio_init.GPIO_Pin = GPIO_Pin_7;
-    gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio_init.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(GPIOB, &gpio_init);
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    I2C_SoftwareResetCmd(I2C1, ENABLE);
+    DelayUs(10U);
+    I2C_SoftwareResetCmd(I2C1, DISABLE);
+    I2C_Cmd(I2C1, ENABLE);
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
 }
 
-static void SHT31_BusDelay(void)
+static uint8_t SHT31_WaitEvent(uint32_t event, const char *error_text)
 {
-    DelayUs(5U);
-}
+    uint32_t timeout = SHT31_I2C_TIMEOUT;
 
-static void SHT31_Start(void)
-{
-    SHT31_SdaOutputMode();
-    SHT31_SDA = 1;
-    SHT31_SCL = 1;
-    SHT31_BusDelay();
-    SHT31_SDA = 0;
-    SHT31_BusDelay();
-    SHT31_SCL = 0;
-    SHT31_BusDelay();
-}
-
-static void SHT31_Stop(void)
-{
-    SHT31_SdaOutputMode();
-    SHT31_SDA = 0;
-    SHT31_BusDelay();
-    SHT31_SCL = 1;
-    SHT31_BusDelay();
-    SHT31_SDA = 1;
-    SHT31_BusDelay();
-}
-
-static uint8_t SHT31_WaitAck(void)
-{
-    uint8_t ack;
-
-    SHT31_SdaInputMode();
-    SHT31_BusDelay();
-    SHT31_SCL = 1;
-    SHT31_BusDelay();
-    ack = (uint8_t)GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_7);
-    SHT31_SCL = 0;
-    SHT31_BusDelay();
-    SHT31_SdaOutputMode();
-    return ack;
-}
-
-static void SHT31_WriteByte(uint8_t value)
-{
-    uint8_t i;
-
-    SHT31_SdaOutputMode();
-    for (i = 0U; i < 8U; i++)
+    while (I2C_CheckEvent(I2C1, event) != SUCCESS)
     {
-        SHT31_SDA = (value & 0x80U) ? 1 : 0;
-        SHT31_BusDelay();
-        SHT31_SCL = 1;
-        SHT31_BusDelay();
-        SHT31_SCL = 0;
-        SHT31_BusDelay();
-        value <<= 1;
-    }
-
-    SHT31_SDA = 1;
-}
-
-static uint8_t SHT31_ReadByte(uint8_t ack)
-{
-    uint8_t i;
-    uint8_t value = 0U;
-
-    SHT31_SdaInputMode();
-
-    for (i = 0U; i < 8U; i++)
-    {
-        value <<= 1;
-        SHT31_SCL = 1;
-        SHT31_BusDelay();
-        if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_7) != Bit_RESET)
+        if (I2C_GetFlagStatus(I2C1, I2C_FLAG_AF) == SET)
         {
-            value |= 0x01U;
+            I2C_ClearFlag(I2C1, I2C_FLAG_AF);
+            SHT31_SetError(error_text);
+            return 0U;
         }
-        SHT31_SCL = 0;
-        SHT31_BusDelay();
+
+        if (I2C_GetFlagStatus(I2C1, I2C_FLAG_BERR) == SET)
+        {
+            I2C_ClearFlag(I2C1, I2C_FLAG_BERR);
+            SHT31_SetError("i2c bus error");
+            return 0U;
+        }
+
+        if (I2C_GetFlagStatus(I2C1, I2C_FLAG_ARLO) == SET)
+        {
+            I2C_ClearFlag(I2C1, I2C_FLAG_ARLO);
+            SHT31_SetError("i2c arbitration lost");
+            return 0U;
+        }
+
+        if (timeout-- == 0U)
+        {
+            SHT31_SetError(error_text);
+            return 0U;
+        }
     }
 
-    SHT31_SdaOutputMode();
-    SHT31_SDA = (ack != 0U) ? 0 : 1;
-    SHT31_BusDelay();
-    SHT31_SCL = 1;
-    SHT31_BusDelay();
-    SHT31_SCL = 0;
-    SHT31_BusDelay();
-    SHT31_SDA = 1;
+    return 1U;
+}
 
-    return value;
+static uint8_t SHT31_WaitFlagSet(uint32_t flag, const char *error_text)
+{
+    uint32_t timeout = SHT31_I2C_TIMEOUT;
+
+    while (I2C_GetFlagStatus(I2C1, flag) == RESET)
+    {
+        if (timeout-- == 0U)
+        {
+            SHT31_SetError(error_text);
+            return 0U;
+        }
+    }
+
+    return 1U;
 }
 
 static uint8_t SHT31_Crc8(const uint8_t *data, uint8_t len)
@@ -149,62 +102,105 @@ static uint8_t SHT31_Crc8(const uint8_t *data, uint8_t len)
     return crc;
 }
 
-static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out, char *error_buf, uint16_t error_buf_size)
+static uint8_t SHT31_SendMeasureCommand(uint8_t addr_7bit)
+{
+    I2C_GenerateSTART(I2C1, ENABLE);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_MODE_SELECT, "start timeout") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_Send7bitAddress(I2C1, (uint8_t)(addr_7bit << 1), I2C_Direction_Transmitter);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED, "write address NACK") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_SendData(I2C1, SHT31_CMD_MEAS_HIGHREP_MSB);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_BYTE_TRANSMITTED, "command MSB timeout") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_SendData(I2C1, SHT31_CMD_MEAS_HIGHREP_LSB);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_BYTE_TRANSMITTED, "command LSB timeout") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    return 1U;
+}
+
+static uint8_t SHT31_ReadPayload(uint8_t addr_7bit, uint8_t *rx)
+{
+    uint8_t remaining = 6U;
+    uint8_t index = 0U;
+
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
+    I2C_GenerateSTART(I2C1, ENABLE);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_MODE_SELECT, "restart timeout") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_Send7bitAddress(I2C1, (uint8_t)(addr_7bit << 1), I2C_Direction_Receiver);
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED, "read address NACK") == 0U)
+    {
+        return 0U;
+    }
+
+    while (remaining > 3U)
+    {
+        if (SHT31_WaitEvent(I2C_EVENT_MASTER_BYTE_RECEIVED, "read timeout") == 0U)
+        {
+            return 0U;
+        }
+        rx[index++] = I2C_ReceiveData(I2C1);
+        remaining--;
+    }
+
+    if (SHT31_WaitFlagSet(I2C_FLAG_BTF, "final bytes timeout") == 0U)
+    {
+        return 0U;
+    }
+
+    I2C_AcknowledgeConfig(I2C1, DISABLE);
+    rx[index++] = I2C_ReceiveData(I2C1);
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    rx[index++] = I2C_ReceiveData(I2C1);
+
+    if (SHT31_WaitEvent(I2C_EVENT_MASTER_BYTE_RECEIVED, "last byte timeout") == 0U)
+    {
+        return 0U;
+    }
+    rx[index++] = I2C_ReceiveData(I2C1);
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
+
+    return 1U;
+}
+
+static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
 {
     uint8_t rx[6];
     uint16_t raw_t;
     uint16_t raw_h;
-    uint8_t write_addr = (uint8_t)((addr_7bit << 1) | 0U);
-    uint8_t read_addr = (uint8_t)((addr_7bit << 1) | 1U);
 
-    SHT31_Start();
-    SHT31_WriteByte(write_addr);
-    if (SHT31_WaitAck() != 0U)
+    if (SHT31_SendMeasureCommand(addr_7bit) == 0U)
     {
-        SHT31_Stop();
-        snprintf(error_buf, error_buf_size, "0x%02X write address NACK", addr_7bit);
         return 0U;
     }
-
-    SHT31_WriteByte((uint8_t)(SHT31_CMD_MEAS_HIGHREP >> 8));
-    if (SHT31_WaitAck() != 0U)
-    {
-        SHT31_Stop();
-        snprintf(error_buf, error_buf_size, "0x%02X command MSB NACK", addr_7bit);
-        return 0U;
-    }
-
-    SHT31_WriteByte((uint8_t)(SHT31_CMD_MEAS_HIGHREP & 0xFFU));
-    if (SHT31_WaitAck() != 0U)
-    {
-        SHT31_Stop();
-        snprintf(error_buf, error_buf_size, "0x%02X command LSB NACK", addr_7bit);
-        return 0U;
-    }
-    SHT31_Stop();
 
     DelayMs(20U);
 
-    SHT31_Start();
-    SHT31_WriteByte(read_addr);
-    if (SHT31_WaitAck() != 0U)
+    if (SHT31_ReadPayload(addr_7bit, rx) == 0U)
     {
-        SHT31_Stop();
-        snprintf(error_buf, error_buf_size, "0x%02X read address NACK", addr_7bit);
         return 0U;
     }
 
-    rx[0] = SHT31_ReadByte(1U);
-    rx[1] = SHT31_ReadByte(1U);
-    rx[2] = SHT31_ReadByte(1U);
-    rx[3] = SHT31_ReadByte(1U);
-    rx[4] = SHT31_ReadByte(1U);
-    rx[5] = SHT31_ReadByte(0U);
-    SHT31_Stop();
-
     if ((SHT31_Crc8(&rx[0], 2U) != rx[2]) || (SHT31_Crc8(&rx[3], 2U) != rx[5]))
     {
-        snprintf(error_buf, error_buf_size, "0x%02X CRC mismatch", addr_7bit);
+        SHT31_SetError("crc mismatch");
         return 0U;
     }
 
@@ -214,60 +210,69 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out, char *err
     out->temperature_c = -45.0f + (175.0f * (float)raw_t / 65535.0f);
     out->humidity_rh = 100.0f * (float)raw_h / 65535.0f;
 
-    snprintf(error_buf, error_buf_size, "ok");
+    SHT31_SetError("ok");
     return 1U;
 }
 
 void SHT31_Init(void)
 {
     GPIO_InitTypeDef gpio_init;
+    I2C_InitTypeDef i2c_init;
 
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
 
     gpio_init.GPIO_Pin = GPIO_Pin_6 | GPIO_Pin_7;
     gpio_init.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio_init.GPIO_Mode = GPIO_Mode_Out_OD;
+    gpio_init.GPIO_Mode = GPIO_Mode_AF_OD;
     GPIO_Init(GPIOB, &gpio_init);
 
-    SHT31_SCL = 1;
-    SHT31_SDA = 1;
+    I2C_DeInit(I2C1);
+    I2C_StructInit(&i2c_init);
+    i2c_init.I2C_ClockSpeed = 100000U;
+    i2c_init.I2C_Mode = I2C_Mode_I2C;
+    i2c_init.I2C_DutyCycle = I2C_DutyCycle_2;
+    i2c_init.I2C_OwnAddress1 = 0U;
+    i2c_init.I2C_Ack = I2C_Ack_Enable;
+    i2c_init.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+    I2C_Init(I2C1, &i2c_init);
+    I2C_Cmd(I2C1, ENABLE);
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
+
+    SHT31_SetError("initialized");
 }
 
 uint8_t SHT31_Read(SHT31_Data *out)
 {
     static uint8_t current_addr = SHT31_ADDR_7BIT_PRIMARY;
     uint8_t alternate_addr;
-    char primary_error[32];
-    char alternate_error[32];
+    char first_error[48];
+    char second_error[48];
 
     if (out == 0)
     {
-        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "null output pointer");
+        SHT31_SetError("null output pointer");
         return 0U;
     }
 
-    if (SHT31_ReadAtAddress(current_addr, out, primary_error, sizeof(primary_error)) != 0U)
+    if (SHT31_ReadAtAddress(current_addr, out) != 0U)
     {
-        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "ok");
         return 1U;
     }
+    snprintf(first_error, sizeof(first_error), "0x%02X %s", current_addr, g_sht31_last_error);
+    SHT31_ResetBus();
 
     alternate_addr = (current_addr == SHT31_ADDR_7BIT_PRIMARY) ?
         SHT31_ADDR_7BIT_SECONDARY : SHT31_ADDR_7BIT_PRIMARY;
-    if (SHT31_ReadAtAddress(alternate_addr, out, alternate_error, sizeof(alternate_error)) != 0U)
+    if (SHT31_ReadAtAddress(alternate_addr, out) != 0U)
     {
         current_addr = alternate_addr;
-        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "ok");
         return 1U;
     }
+    snprintf(second_error, sizeof(second_error), "0x%02X %s", alternate_addr, g_sht31_last_error);
+    SHT31_ResetBus();
 
-    snprintf(
-        g_sht31_last_error,
-        sizeof(g_sht31_last_error),
-        "%s; %s",
-        primary_error,
-        alternate_error
-    );
+    snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "%s; %s", first_error, second_error);
     return 0U;
 }
 

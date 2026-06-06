@@ -81,7 +81,8 @@ int main(void)
     DebugUart_Init(DEBUG_UART_BAUD);
 
     DelayMs(200U);
-    DebugUart_SendString("\r\nCold-chain node boot (serial-only)\r\n");
+    DebugUart_SendString("\r\nCold-chain node boot (serial-only, hw-i2c)\r\n");
+    DebugUart_SendString("SHT31 bus: I2C1 PB6/PB7\r\n");
 
     while (1)
     {
