@@ -52,7 +52,9 @@ static void Report_SensorReading(void)
 
     if (SHT31_Read(&data) == 0U)
     {
-        DebugUart_SendString("SHT31 read failed\r\n");
+        DebugUart_SendString("SHT31 read failed: ");
+        DebugUart_SendString(SHT31_GetLastError());
+        DebugUart_SendString("\r\n");
         return;
     }
 

@@ -8,6 +8,8 @@
 #define SHT31_SCL PBout(6)
 #define SHT31_SDA PBout(7)
 
+static char g_sht31_last_error[80] = "not started";
+
 static void SHT31_BusDelay(void)
 {
     DelayUs(5U);
@@ -122,7 +124,7 @@ static uint8_t SHT31_Crc8(const uint8_t *data, uint8_t len)
     return crc;
 }
 
-static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
+static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out, char *error_buf, uint16_t error_buf_size)
 {
     uint8_t rx[6];
     uint16_t raw_t;
@@ -135,6 +137,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
+        snprintf(error_buf, error_buf_size, "0x%02X write address NACK", addr_7bit);
         return 0U;
     }
 
@@ -142,6 +145,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
+        snprintf(error_buf, error_buf_size, "0x%02X command MSB NACK", addr_7bit);
         return 0U;
     }
 
@@ -149,6 +153,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
+        snprintf(error_buf, error_buf_size, "0x%02X command LSB NACK", addr_7bit);
         return 0U;
     }
     SHT31_Stop();
@@ -160,6 +165,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
     if (SHT31_WaitAck() != 0U)
     {
         SHT31_Stop();
+        snprintf(error_buf, error_buf_size, "0x%02X read address NACK", addr_7bit);
         return 0U;
     }
 
@@ -173,6 +179,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
 
     if ((SHT31_Crc8(&rx[0], 2U) != rx[2]) || (SHT31_Crc8(&rx[3], 2U) != rx[5]))
     {
+        snprintf(error_buf, error_buf_size, "0x%02X CRC mismatch", addr_7bit);
         return 0U;
     }
 
@@ -182,6 +189,7 @@ static uint8_t SHT31_ReadAtAddress(uint8_t addr_7bit, SHT31_Data *out)
     out->temperature_c = -45.0f + (175.0f * (float)raw_t / 65535.0f);
     out->humidity_rh = 100.0f * (float)raw_h / 65535.0f;
 
+    snprintf(error_buf, error_buf_size, "ok");
     return 1U;
 }
 
@@ -204,24 +212,41 @@ uint8_t SHT31_Read(SHT31_Data *out)
 {
     static uint8_t current_addr = SHT31_ADDR_7BIT_PRIMARY;
     uint8_t alternate_addr;
+    char primary_error[32];
+    char alternate_error[32];
 
     if (out == 0)
     {
+        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "null output pointer");
         return 0U;
     }
 
-    if (SHT31_ReadAtAddress(current_addr, out) != 0U)
+    if (SHT31_ReadAtAddress(current_addr, out, primary_error, sizeof(primary_error)) != 0U)
     {
+        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "ok");
         return 1U;
     }
 
     alternate_addr = (current_addr == SHT31_ADDR_7BIT_PRIMARY) ?
         SHT31_ADDR_7BIT_SECONDARY : SHT31_ADDR_7BIT_PRIMARY;
-    if (SHT31_ReadAtAddress(alternate_addr, out) != 0U)
+    if (SHT31_ReadAtAddress(alternate_addr, out, alternate_error, sizeof(alternate_error)) != 0U)
     {
         current_addr = alternate_addr;
+        snprintf(g_sht31_last_error, sizeof(g_sht31_last_error), "ok");
         return 1U;
     }
 
+    snprintf(
+        g_sht31_last_error,
+        sizeof(g_sht31_last_error),
+        "%s; %s",
+        primary_error,
+        alternate_error
+    );
     return 0U;
+}
+
+const char *SHT31_GetLastError(void)
+{
+    return g_sht31_last_error;
 }

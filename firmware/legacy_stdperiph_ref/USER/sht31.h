@@ -11,5 +11,6 @@ typedef struct
 
 void SHT31_Init(void);
 uint8_t SHT31_Read(SHT31_Data *out);
+const char *SHT31_GetLastError(void);
 
 #endif
